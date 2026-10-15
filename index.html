@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>课文默写</title>
+<meta name="theme-color" content="#2f5d4a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="课文默写">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="wrap" id="setup">
+  <header class="top">
+    <div>
+      <h1>课文默写</h1>
+      <p>拍下课文，说要默写哪些，一个一个报，写好了说“好了”。</p>
+    </div>
+    <button id="openSettings" type="button" class="icon" aria-label="设置">⚙︎</button>
+  </header>
+
+  <p class="banner" id="keyBanner" hidden>还没有设置 DeepSeek API Key，拍照识别用不了。<button type="button" id="bannerSet">去设置</button></p>
+
+  <section class="step">
+    <h2><span class="n">一</span>拍课文</h2>
+    <div class="row">
+      <label class="filebtn">📷 拍照 / 选图片<input id="file" type="file" accept="image/*" multiple></label>
+      <span class="hint" id="imgHint">可以多拍几页</span>
+    </div>
+    <div class="thumbs" id="thumbs"></div>
+  </section>
+
+  <section class="step">
+    <h2><span class="n">二</span>要默写哪些</h2>
+    <div class="scope">
+      <input id="scope" type="text" placeholder="例如：第三单元的词语 / 红笔圈出来的" enterkeyhint="done">
+      <button class="mic" id="micScope" type="button" aria-label="语音输入" hidden>🎤</button>
+    </div>
+    <div class="chips" id="chips">
+      <button type="button">红笔圈出来的</button>
+      <button type="button">蓝笔画线的</button>
+      <button type="button">第一单元的词语</button>
+      <button type="button">整首古诗，一句一句</button>
+      <button type="button">课后生字词</button>
+    </div>
+    <div class="row">
+      <button class="primary" id="extract" type="button">识别默写内容</button>
+      <button id="stopExtract" type="button" hidden>停止</button>
+    </div>
+    <p class="status" id="exStatus"></p>
+  </section>
+
+  <section class="step">
+    <h2><span class="n">三</span>默写清单 <span class="badge" id="listBadge">示例</span></h2>
+    <p class="hint">一行一个，报一次读一行。可以直接改、删、加。</p>
+    <textarea id="list" spellcheck="false"></textarea>
+    <div class="row">
+      <span class="seg" role="group" aria-label="模式">
+        <button type="button" id="mSeq" aria-pressed="true">顺序</button>
+        <button type="button" id="mRand" aria-pressed="false">随机</button>
+      </span>
+    </div>
+    <div class="row">
+      <label class="check"><input type="checkbox" id="twice" checked> 每个读两遍</label>
+      <label class="check"><input type="checkbox" id="slow" checked> 慢速</label>
+      <label class="check" id="voiceWrap" hidden><input type="checkbox" id="voice" checked> 语音控制</label>
+    </div>
+    <div class="row">
+      <button class="primary start" id="start" type="button">开始默写</button>
+    </div>
+    <p class="status" id="ttsStatus"></p>
+  </section>
+</div>
+
+<div id="play" hidden>
+  <div class="count" id="count"></div>
+  <div class="tian"><span class="big" id="bigNum">1</span></div>
+  <div class="speaking" id="speaking"></div>
+  <div class="peek" id="peek"></div>
+  <button class="primary ok" id="ok" type="button">好了</button>
+  <div class="row center">
+    <button id="again" type="button">再读一遍</button>
+    <button id="peekBtn" type="button">偷看答案</button>
+    <button id="quit" type="button">结束</button>
+  </div>
+  <div class="listen" id="listen"></div>
+</div>
+
+<div class="wrap" id="finish" hidden>
+  <header><h1>默写完成</h1><p id="finishSub"></p></header>
+  <ol class="done-list" id="doneList"></ol>
+  <div class="row">
+    <button class="primary" id="restart" type="button">再来一次</button>
+    <button id="back" type="button">返回修改</button>
+  </div>
+</div>
+
+<dialog id="settings">
+  <form method="dialog" class="dlg">
+    <h2>设置</h2>
+    <label for="apiKey">DeepSeek API Key</label>
+    <input id="apiKey" type="password" autocomplete="off" placeholder="sk-...">
+    <p class="hint">只保存在这台手机上，不会上传到别处。在 platform.deepseek.com 创建。</p>
+    <label for="model">模型</label>
+    <input id="model" type="text" autocomplete="off">
+    <p class="hint">默认 deepseek-flash（支持看图）。</p>
+    <div class="row">
+      <button class="primary" value="save" id="saveSettings">保存</button>
+      <button value="cancel" type="submit">取消</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -225,7 +225,7 @@ function runRec() {
     rec = new SR(); rec.lang = "zh-CN"; rec.continuous = true; rec.interimResults = false;
     rec.onresult = ev => {
       const r = ev.results[ev.results.length - 1];
-      if (r.isFinal !== false) onVoice(r[0].transcript.replace(/[，。！？,.!?\s]/g, ""));
+      if (r.isFinal !== false) onVoice(r[0].transcript.replace(/[，。！？、,.!?\s]/g, "").toLowerCase());
     };
     rec.onerror = ev => {
       if (ev.error === "not-allowed" || ev.error === "service-not-allowed") { recWanted = false; voiceBlocked(); }
@@ -240,20 +240,66 @@ function pauseRec() { recPaused = true; try { rec?.abort(); } catch {} rec = nul
 function resumeRec() { if (!recWanted) return; recPaused = false; setTimeout(runRec, 200); }
 function showListen() {
   const on = recWanted && !recPaused && recFor === "play";
-  $("listen").textContent = on ? "🎤 在听：说“好了”报下一个，说“再读一遍”重读" : "";
+  $("listen").textContent = on ? "🎤 在听：说“好了 / 下一个”继续，说“再读一遍”重读" : "";
 }
 function voiceBlocked() {
   $("listen").textContent = "语音识别不可用，点按钮就行。";
   $("micScope").hidden = true; $("micScope").classList.remove("on");
 }
-function onVoice(t) {
+// Common phrasings are matched locally (instant, offline). Anything else that is short enough to be a
+// command goes to DeepSeek to classify; long utterances are the child reading aloud and are ignored.
+const INTENT_RULES = [
+  ["finish", /结束|不写了|不默了|停止|退出|就到这|stop|quit|finish/i],
+  ["again", /再[读说念来报讲]|重[读说念复新来]|再一遍|一遍|没听[清见到懂]|听不[清见懂]|什么|啥|说慢点|慢一点|again|repeat|pardon|sorry|what/i],
+  ["next", /好了|好啦|好的|好嘞|好咯|写好|写完|完了|完成|下一|下个|继续|可以了|行了|然后|搞定|ok|okay|next|done|go/i],
+  ["next", /^(好|行|嗯|对|下)$/]
+];
+function ruleIntent(t) {
+  for (const [intent, re] of INTENT_RULES) if (re.test(t)) return intent;
+  return null;
+}
+let intentBusy = false;
+async function llmIntent(t) {
+  if (!apiKey() || intentBusy || t.length > 12) return null;
+  intentBusy = true;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 6000);
+  try {
+    const resp = await fetch(API_URL, {
+      method: "POST", signal: ctl.signal,
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + apiKey() },
+      body: JSON.stringify({
+        model: model(), temperature: 0, max_tokens: 20, stream: false,
+        messages: [{ role: "user", content:
+`小学生正在听写，程序逐个报词语。下面是语音识别听到孩子说的一句话（可能有识别错误、方言或英文）：
+「${t}」
+判断孩子的意图，只回复一个词：
+next = 写好了/要下一个
+again = 没听清/要再读一遍
+finish = 不写了/结束
+none = 不是指令（例如在念正在写的字、自言自语）` }]
+      })
+    });
+    if (!resp.ok) return null;
+    const out = String((await resp.json())?.choices?.[0]?.message?.content || "").toLowerCase();
+    return /finish/.test(out) ? "finish" : /again/.test(out) ? "again" : /next/.test(out) ? "next" : null;
+  } catch { return null; }
+  finally { clearTimeout(timer); intentBusy = false; }
+}
+async function onVoice(t) {
   if (!t) return;
   if (recFor === "scope") { $("scope").value = t; stopRec(); return; }
-  if (recFor === "play" && !speaking) {
-    if (/再|重|没听清|重复/.test(t)) again();
-    else if (/好了|好的|写好|写完|下一个|^好$|ok/i.test(t)) next();
-    else if (/结束|不写了/.test(t)) finish();
-  }
+  if (recFor !== "play" || speaking) return;
+  $("heard").textContent = "听到：" + t;
+  // The child reading the current word aloud (e.g. the word itself is “完成”) is not a command.
+  const cur = (spoken[pos] || "").replace(/[，。！？、,.!?\s]/g, "").toLowerCase();
+  if (t.length >= 2 && cur && (cur.includes(t) || t.includes(cur))) return;
+  const at = pos;
+  const intent = ruleIntent(t) || await llmIntent(t);
+  if (at !== pos || speaking || $("play").hidden) return;   // something else already moved on
+  if (intent === "next") next();
+  else if (intent === "again") again();
+  else if (intent === "finish") finish();
 }
 $("micScope").onclick = () => {
   if (recWanted && recFor === "scope") { stopRec(); return; }
@@ -262,7 +308,21 @@ $("micScope").onclick = () => {
 
 // ---------- dictation flow ----------
 function items() { return $("list").value.split("\n").map(s => s.trim()).filter(Boolean); }
+// Keep the screen on while dictating. iOS drops the lock whenever the app goes to the background,
+// so it is re-requested each time the page becomes visible again.
 let wakeLock = null;
+async function keepAwake() {
+  if (!("wakeLock" in navigator)) { $("awakeHint").hidden = false; return; }
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    $("awakeHint").hidden = true;
+    wakeLock.addEventListener("release", () => { wakeLock = null; });
+  } catch { $("awakeHint").hidden = false; }
+}
+function releaseAwake() { try { wakeLock?.release(); } catch {} wakeLock = null; }
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && !$("play").hidden && !wakeLock) keepAwake();
+});
 function start() {
   const list = items();
   if (!list.length) { $("ttsStatus").textContent = "清单是空的，先识别或输入要默写的内容。"; return; }
@@ -270,7 +330,7 @@ function start() {
   if (mode === "rand") for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
   pos = 0; spoken = [];
   $("setup").hidden = true; $("finish").hidden = true; $("play").hidden = false;
-  try { navigator.wakeLock?.request("screen").then(l => wakeLock = l).catch(() => {}); } catch {}
+  keepAwake();
   stopRec();
   // Mic stays paused until the first item has been read aloud (speak → done → resumeRec).
   if (SR && $("voice").checked) { recFor = "play"; recWanted = true; recPaused = true; }
@@ -282,6 +342,7 @@ function show() {
   $("count").textContent = `第 ${pos + 1} 个 / 共 ${order.length} 个 · ${mode === "rand" ? "随机" : "顺序"}`;
   $("bigNum").textContent = pos + 1;
   $("peek").textContent = "";
+  $("heard").textContent = "";
   $("peekBtn").textContent = "偷看答案";
   $("ok").textContent = pos === order.length - 1 ? "好了，完成" : "好了";
   speak(text);
@@ -290,7 +351,7 @@ function next() { if ($("play").hidden) return; if (pos >= order.length - 1) fin
 function again() { if (!$("play").hidden) speak(spoken[pos]); }
 function finish() {
   stopRec(); synth?.cancel(); speaking = false; clearTimeout(speakTimer);
-  try { wakeLock?.release(); } catch {} wakeLock = null;
+  releaseAwake();
   $("play").hidden = true; $("finish").hidden = false;
   const done = spoken.filter(Boolean);
   $("finishSub").textContent = `共报了 ${done.length} 个，对照下面的答案检查吧。`;

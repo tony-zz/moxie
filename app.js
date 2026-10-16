@@ -95,14 +95,15 @@ $("chips").addEventListener("click", e => {
 function setStatus(t, err) { const s = $("exStatus"); s.textContent = t; s.classList.toggle("err", !!err); }
 
 function buildPrompt(scope) {
-  return `这些图片是小学语文课本（或练习册）的照片，家长要给孩子听写/默写。
+  return `这些图片是小学课本（或练习册、词汇表）的照片，可能是语文，也可能是英语，家长要给孩子听写/默写。
 家长要求的范围：「${scope}」
 
 请按要求从图片中找出需要报给孩子默写的内容：
 - 如果提到笔的颜色（如红笔圈、蓝笔画线、黑笔打勾），只取被该颜色笔标记的内容，仔细辨认颜色，印刷的彩色字不算笔迹。
-- 如果提到单元、课次、页码，只取那部分。
-- 词语一个一项；古诗、课文句子按一小句（逗号或句号断开）一项。
-- 按课本中出现的顺序排列。去掉拼音和序号，不要标点，保留原文用字。
+- 如果提到单元、课次、页码，只取那部分；没提到就取图中全部。
+- 语文：词语一个一项；古诗、课文句子按一小句（逗号或句号断开）一项。去掉拼音和序号，不要标点，保留原文用字。
+- 英语：家长读中文，孩子写英文。每个英文词条（单词、短语、句子）一项，写成「英文|中文」，如 "do exercise|锻炼"、"It's your turn|轮到你了"。英文去掉页码、星号*和句末标点，保留撇号；中文照抄书上的释义，去掉括号里的补充说明；书上没有中文的，自己给一个简短释义。带*的词条也要取，除非家长说只要核心词。
+- 分两栏排版的，先读完左栏再读右栏，按课本中出现的顺序排列。
 - 找不到符合要求的内容时 items 为空，并在 note 里说明看到了什么。
 
 只回复 JSON，不要其他文字：{"items":["词语或句子", ...], "note":"一句话说明识别范围或问题"}`;
@@ -167,6 +168,8 @@ $("extract").onclick = async () => {
             ...images.map(url => ({ type: "image_url", image_url: { url, detail: "high" } }))
           ]
         }],
+        // Thinking is on by default and spent ~12k tokens (over a minute) deliberating on a word list.
+        thinking: { type: "disabled" },
         stream: true,
         stream_options: { include_usage: true }
       })
@@ -337,7 +340,7 @@ async function llmIntent(t) {
       method: "POST", signal: ctl.signal,
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + apiKey() },
       body: JSON.stringify({
-        model: model(), temperature: 0, max_tokens: 20, stream: false,
+        model: model(), temperature: 0, max_tokens: 20, stream: false, thinking: { type: "disabled" },
         messages: [{ role: "user", content:
 `小学生正在听写，程序逐个报词语。下面是语音识别听到孩子说的一句话（可能有识别错误、方言或英文）：
 「${t}」
@@ -360,7 +363,7 @@ async function onVoice(t) {
   if (recFor !== "play" || speaking) return;
   $("heard").textContent = "听到：" + t;
   // The child reading the current word aloud (e.g. the word itself is “完成”) is not a command.
-  const cur = (spoken[pos] || "").replace(/[，。！？、,.!?\s]/g, "").toLowerCase();
+  const cur = splitItem(spoken[pos]).say.replace(/[，。！？、,.!?\s]/g, "").toLowerCase();
   if (t.length >= 2 && cur && (cur.includes(t) || t.includes(cur))) return;
   const at = pos;
   const intent = ruleIntent(t) || await llmIntent(t);
@@ -376,6 +379,13 @@ $("micScope").onclick = () => {
 
 // ---------- dictation flow ----------
 function items() { return $("list").value.split("\n").map(s => s.trim()).filter(Boolean); }
+// "answer | prompt": English lists read the Chinese meaning aloud and the child writes the English.
+// A line without "|" is both what is read and what is written (语文).
+function splitItem(line) {
+  const m = String(line || "").split(/\s*[|｜]\s*/);
+  if (m.length < 2 || !m[0] || !m[1]) return { answer: line, say: line };
+  return { answer: m[0], say: m.slice(1).join("，") };
+}
 // Keep the screen on while dictating. iOS drops the lock whenever the app goes to the background,
 // so it is re-requested each time the page becomes visible again.
 let wakeLock = null;
@@ -413,10 +423,10 @@ function show() {
   $("heard").textContent = "";
   $("peekBtn").textContent = "偷看答案";
   $("ok").textContent = pos === order.length - 1 ? "好了，完成" : "好了";
-  speak(text);
+  speak(splitItem(text).say);
 }
 function next() { if ($("play").hidden) return; if (pos >= order.length - 1) finish(); else { pos++; show(); } }
-function again() { if (!$("play").hidden) speak(spoken[pos]); }
+function again() { if (!$("play").hidden) speak(splitItem(spoken[pos]).say); }
 function finish() {
   stopRec(); synth?.cancel(); speaking = false; clearTimeout(speakTimer);
   releaseAwake();
@@ -424,7 +434,10 @@ function finish() {
   const done = spoken.filter(Boolean);
   $("finishSub").textContent = `共报了 ${done.length} 个，对照下面的答案检查吧。`;
   const ol = $("doneList"); ol.textContent = "";
-  done.forEach(t => { const li = document.createElement("li"); li.textContent = t; ol.append(li); });
+  done.forEach(t => {
+    const { answer, say } = splitItem(t);
+    const li = document.createElement("li"); li.textContent = answer === say ? answer : `${answer}（${say}）`; ol.append(li);
+  });
   window.scrollTo(0, 0);
 }
 $("start").onclick = start;
@@ -433,7 +446,7 @@ $("again").onclick = again;
 $("quit").onclick = finish;
 $("peekBtn").onclick = () => {
   const showing = !!$("peek").textContent;
-  $("peek").textContent = showing ? "" : spoken[pos];
+  $("peek").textContent = showing ? "" : splitItem(spoken[pos]).answer;
   $("peekBtn").textContent = showing ? "偷看答案" : "藏起来";
 };
 $("restart").onclick = start;

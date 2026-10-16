@@ -115,6 +115,32 @@ function parseJson(text) {
   return JSON.parse(t.slice(a, b + 1));
 }
 
+// Complete string elements of the "items" array seen so far in a partially streamed JSON reply.
+function partialItems(text) {
+  const m = /"items"\s*:\s*\[/.exec(text);
+  if (!m) return [];
+  const out = [], re = /\s*,?\s*"((?:[^"\\]|\\.)*)"/y;
+  re.lastIndex = m.index + m[0].length;
+  let r;
+  while ((r = re.exec(text))) {
+    try { out.push(JSON.parse('"' + r[1] + '"').trim()); } catch {}
+  }
+  return out.filter(Boolean);
+}
+
+const secs = ms => (ms / 1000).toFixed(1) + "s";
+function timingText(t, usage) {
+  const parts = [`图片处理 ${secs(t.prep)}`];
+  if (t.firstToken != null) parts.push(`首字 ${secs(t.firstToken)}`);
+  if (t.thinking) parts.push(`思考 ${secs(t.thinking)}`);
+  parts.push(`总计 ${secs(t.total)}`);
+  if (usage) {
+    const rt = usage.completion_tokens_details?.reasoning_tokens;
+    parts.push(`输入 ${usage.prompt_tokens} / 输出 ${usage.completion_tokens}` + (rt ? `（其中思考 ${rt}）` : "") + " tokens");
+  }
+  return "耗时：" + parts.join("，");
+}
+
 $("extract").onclick = async () => {
   if (!apiKey()) { openSettings(); return; }
   if (!photos.length) { setStatus("先拍一张课文照片。", true); return; }
@@ -122,10 +148,12 @@ $("extract").onclick = async () => {
   extractCtl = new AbortController();
   $("extract").disabled = true; $("stopExtract").hidden = false;
   setStatus("正在处理图片…");
+  const t0 = performance.now(), t = {};
   try {
     const images = [];
     for (const p of photos) images.push(await toDataUrl(p.file));
-    setStatus("正在识别，大约需要半分钟…");
+    t.prep = performance.now() - t0;
+    setStatus("正在上传并识别…");
     const resp = await fetch(API_URL, {
       method: "POST",
       signal: extractCtl.signal,
@@ -139,7 +167,8 @@ $("extract").onclick = async () => {
             ...images.map(url => ({ type: "image_url", image_url: { url, detail: "high" } }))
           ]
         }],
-        stream: false
+        stream: true,
+        stream_options: { include_usage: true }
       })
     });
     if (!resp.ok) {
@@ -150,13 +179,52 @@ $("extract").onclick = async () => {
       if (resp.status === 429) throw new Error("请求太频繁，稍等一会再试。");
       throw new Error(`识别失败（${resp.status}）${msg ? "：" + msg : ""}`);
     }
-    const data = await resp.json();
-    const res = parseJson(data?.choices?.[0]?.message?.content);
+    // Server-sent events: "data: {...}" lines, ending with "data: [DONE]".
+    const reader = resp.body.getReader(), dec = new TextDecoder();
+    let buf = "", content = "", reasoning = 0, usage = null, shown = 0, thinkStart = null;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split("\n"); buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let chunk; try { chunk = JSON.parse(payload); } catch { continue; }
+        if (chunk.usage) usage = chunk.usage;
+        const d = chunk.choices?.[0]?.delta;
+        if (!d) continue;
+        const now = performance.now() - t0;
+        if (d.reasoning_content) {
+          if (t.firstToken == null) t.firstToken = now;
+          if (thinkStart == null) thinkStart = now;
+          reasoning += d.reasoning_content.length;
+          setStatus(`模型思考中…已 ${secs(now - thinkStart)}，${reasoning} 字`);
+        }
+        if (d.content) {
+          if (t.firstToken == null) t.firstToken = now;
+          if (thinkStart != null && t.thinking == null) t.thinking = now - thinkStart;
+          content += d.content;
+          const got = partialItems(content);
+          if (got.length > shown) {
+            shown = got.length;
+            $("list").value = got.join("\n");
+            setStatus(`正在识别…已出 ${shown} 项`);
+          }
+        }
+      }
+    }
+    t.total = performance.now() - t0;
+    if (thinkStart != null && t.thinking == null) t.thinking = t.total - thinkStart;
+    const timing = timingText(t, usage);
+    console.log("[extract]", timing, usage);
+    const res = parseJson(content);
     const items = Array.isArray(res?.items) ? res.items.map(s => String(s).trim()).filter(Boolean) : [];
-    if (!items.length) { setStatus("没有找到符合要求的内容。" + (res?.note ? "（" + res.note + "）" : ""), true); return; }
+    if (!items.length) { setStatus("没有找到符合要求的内容。" + (res?.note ? "（" + res.note + "）" : "") + "\n" + timing, true); return; }
     $("list").value = items.join("\n"); store.set("list", $("list").value);
     $("listBadge").hidden = true;
-    setStatus(`识别出 ${items.length} 项，请核对一下再开始。` + (res?.note ? " " + res.note : ""));
+    setStatus(`识别出 ${items.length} 项，请核对一下再开始。` + (res?.note ? " " + res.note : "") + "\n" + timing);
   } catch (e) {
     if (e.name === "AbortError") setStatus("已停止。");
     else if (e instanceof TypeError) setStatus("连不上 DeepSeek，检查一下网络。", true);

@@ -65,7 +65,7 @@ textarea {
   width: 100%; min-height: 200px; font: inherit; font-size: 17px; line-height: 1.8; padding: 10px 12px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); resize: vertical;
 }
-.status { font-size: 14px; color: var(--muted); min-height: 1.2em; margin: 0; }
+.status { font-size: 14px; color: var(--muted); min-height: 1.2em; margin: 0; white-space: pre-line; }
 .status.err { color: var(--warn); }
 .badge { font-size: 12px; background: var(--chip); color: var(--muted); padding: 1px 8px; border-radius: 99px; font-weight: 400; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
